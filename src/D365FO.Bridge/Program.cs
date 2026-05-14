@@ -78,7 +78,10 @@ namespace D365FO.Bridge
             }
 
             JsonNode idNode = req["id"];
-            string method = (string)req["method"];
+            // Use safe null-propagating access: a JSON payload with "method": null
+            // would cause an InvalidCastException with (string)req["method"].
+            // Note: string (without ?) to avoid CS8632 on net48 target.
+            string method = req["method"]?.GetValue<string>() ?? string.Empty;
             JsonNode paramsNode = req["params"];
 
             if (string.IsNullOrEmpty(method))

@@ -502,3 +502,36 @@ CREATE TABLE IF NOT EXISTS ExtractionRuns (
 CREATE INDEX IF NOT EXISTS IX_ExtractionRuns_Model ON ExtractionRuns(Model);
 CREATE INDEX IF NOT EXISTS IX_ExtractionRuns_StartedUtc ON ExtractionRuns(StartedUtc);
 
+-- AxMap indexing: Maps are AOT objects that define a shared field layout
+-- re-used across multiple tables (e.g. LogisticsPostalAddress pattern).
+-- They are referenced in cross-module integration code and often appear in
+-- CoC/event-handler targets, so indexing them alongside Tables and Classes
+-- is important for accurate `d365fo search` results.
+
+CREATE TABLE IF NOT EXISTS Maps (
+    MapId      INTEGER PRIMARY KEY AUTOINCREMENT,
+    Name       TEXT NOT NULL,
+    ModelId    INTEGER NOT NULL,
+    Label      TEXT,
+    SourcePath TEXT,
+    FOREIGN KEY (ModelId) REFERENCES Models(ModelId)
+);
+CREATE INDEX IF NOT EXISTS IX_Maps_Name ON Maps(Name);
+
+CREATE TABLE IF NOT EXISTS MapFields (
+    MapFieldId INTEGER PRIMARY KEY AUTOINCREMENT,
+    MapId      INTEGER NOT NULL,
+    Name       TEXT NOT NULL,
+    Type       TEXT,
+    EdtName    TEXT,
+    Label      TEXT,
+    FOREIGN KEY (MapId) REFERENCES Maps(MapId) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS MapTables (
+    MapTableId INTEGER PRIMARY KEY AUTOINCREMENT,
+    MapId      INTEGER NOT NULL,
+    TableName  TEXT NOT NULL,
+    FOREIGN KEY (MapId) REFERENCES Maps(MapId) ON DELETE CASCADE
+);
+

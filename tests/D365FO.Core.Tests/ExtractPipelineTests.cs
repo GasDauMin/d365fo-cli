@@ -141,4 +141,248 @@ public class ExtractPipelineTests : IDisposable
         var written = XDocument.Load(target);
         Assert.Equal("AxTable", written.Root!.Name.LocalName);
     }
+
+    [Fact]
+    public void MetadataExtractor_AllowDuplicates_Yes_means_duplicate()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix2", "PkgFix2");
+        Directory.CreateDirectory(Path.Combine(model, "AxTable"));
+        // Index with AllowDuplicates="Yes"
+        File.WriteAllText(Path.Combine(model, "AxTable", "T2.xml"), """
+            <AxTable>
+              <Name>T2</Name>
+              <Indexes>
+                <AxTableIndex>
+                  <Name>IX_Dup</Name>
+                  <AllowDuplicates>Yes</AllowDuplicates>
+                  <Fields>
+                    <AxTableIndexField><DataField>Code</DataField></AxTableIndexField>
+                  </Fields>
+                </AxTableIndex>
+              </Indexes>
+            </AxTable>
+            """);
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix2");
+        var table = Assert.Single(batch.Tables);
+        var ix = Assert.Single(table.Indexes);
+        Assert.True(ix.AllowDuplicates, "AllowDuplicates=Yes should be true");
+    }
+
+    [Fact]
+    public void MetadataExtractor_AllowDuplicates_absent_means_unique()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix2b", "PkgFix2b");
+        Directory.CreateDirectory(Path.Combine(model, "AxTable"));
+        // Index WITHOUT AllowDuplicates element — D365FO default is unique
+        File.WriteAllText(Path.Combine(model, "AxTable", "T2b.xml"), """
+            <AxTable>
+              <Name>T2b</Name>
+              <Indexes>
+                <AxTableIndex>
+                  <Name>IX_Unique</Name>
+                  <Fields>
+                    <AxTableIndexField><DataField>Code</DataField></AxTableIndexField>
+                  </Fields>
+                </AxTableIndex>
+              </Indexes>
+            </AxTable>
+            """);
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix2b");
+        var table = Assert.Single(batch.Tables);
+        var ix = Assert.Single(table.Indexes);
+        Assert.False(ix.AllowDuplicates, "Missing AllowDuplicates should default to unique (false)");
+    }
+
+    [Fact]
+    public void MetadataExtractor_detects_abstract_with_newline_in_declaration()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix4", "PkgFix4");
+        Directory.CreateDirectory(Path.Combine(model, "AxClass"));
+        // Declaration split over a newline (no space on either side of "abstract")
+        File.WriteAllText(Path.Combine(model, "AxClass", "BaseClass.xml"), @"
+<AxClass>
+  <Name>BaseClass</Name>
+  <SourceCode>
+    <Declaration>public abstract
+class BaseClass extends SysOperationServiceBase
+{
+}</Declaration>
+  </SourceCode>
+</AxClass>");;
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix4");
+        var cls = Assert.Single(batch.Classes);
+        Assert.True(cls.IsAbstract, "abstract with trailing newline should be detected by word-boundary regex");
+    }
+
+    [Fact]
+    public void MetadataExtractor_today_in_comment_does_not_flag_HasTodayCall()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix5", "PkgFix5");
+        Directory.CreateDirectory(Path.Combine(model, "AxClass"));
+        File.WriteAllText(Path.Combine(model, "AxClass", "SomeClass.xml"), @"
+<AxClass>
+  <Name>SomeClass</Name>
+  <SourceCode>
+    <Methods>
+      <Method>
+        <Name>run</Name>
+        <Source>
+public void run()
+{
+    // NOTE: today() is deprecated, use DateTimeUtil::getToday(...)
+    TransDate d = DateTimeUtil::getToday(DateTimeUtil::getUserPreferredTimeZone());
+}
+        </Source>
+      </Method>
+    </Methods>
+  </SourceCode>
+</AxClass>");;
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix5");
+        var cls = Assert.Single(batch.Classes);
+        var method = Assert.Single(cls.Methods);
+        Assert.False(method.HasTodayCall,
+            "today() inside a // comment must not flag HasTodayCall");
+    }
+
+    [Fact]
+    public void MetadataExtractor_today_in_string_literal_does_not_flag_HasTodayCall()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix5b", "PkgFix5b");
+        Directory.CreateDirectory(Path.Combine(model, "AxClass"));
+        File.WriteAllText(Path.Combine(model, "AxClass", "SomeClass2.xml"), @"
+<AxClass>
+  <Name>SomeClass2</Name>
+  <SourceCode>
+    <Methods>
+      <Method>
+        <Name>run</Name>
+        <Source>
+public void run()
+{
+    str msg = ""Do not use today() - use DateTimeUtil instead"";
+    info(msg);
+}
+        </Source>
+      </Method>
+    </Methods>
+  </SourceCode>
+</AxClass>");
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix5b");
+        var cls = Assert.Single(batch.Classes);
+        var method = Assert.Single(cls.Methods);
+        Assert.False(method.HasTodayCall,
+            "today() inside a string literal must not flag HasTodayCall");
+    }
+
+    [Fact]
+    public void MetadataExtractor_security_skips_disabled_entry_points()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix10", "PkgFix10");
+        Directory.CreateDirectory(Path.Combine(model, "AxSecurityPrivilege"));
+        File.WriteAllText(Path.Combine(model, "AxSecurityPrivilege", "FleetPriv.xml"), """
+            <AxSecurityPrivilege>
+              <Name>FleetPriv</Name>
+              <EntryPoints>
+                <AxSecurityEntryPointReference>
+                  <ObjectName>FleetForm</ObjectName>
+                  <ObjectType>MenuItemDisplay</ObjectType>
+                  <AccessLevel>Read</AccessLevel>
+                </AxSecurityEntryPointReference>
+                <AxSecurityEntryPointReference>
+                  <ObjectName>FleetOldForm</ObjectName>
+                  <ObjectType>MenuItemDisplay</ObjectType>
+                  <AccessLevel>Read</AccessLevel>
+                  <Enabled>No</Enabled>
+                </AxSecurityEntryPointReference>
+              </EntryPoints>
+            </AxSecurityPrivilege>
+            """);
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix10");
+        var priv = Assert.Single(batch.Privileges);
+        // Only enabled entry point should appear
+        var ep = Assert.Single(priv.EntryPoints);
+        Assert.Equal("FleetForm", ep.ObjectName);
+    }
+
+    [Fact]
+    public void MetadataExtractor_parses_AxMap()
+    {
+        var model = Path.Combine(_workRoot, "PkgFix11", "PkgFix11");
+        Directory.CreateDirectory(Path.Combine(model, "AxMap"));
+        File.WriteAllText(Path.Combine(model, "AxMap", "DirPartyAddress.xml"), """
+            <AxMap>
+              <Name>DirPartyAddress</Name>
+              <Label>@SYS12345</Label>
+              <Fields>
+                <AxMapBaseField>
+                  <Name>Street</Name>
+                  <ExtendedDataType>LogisticsAddressStreet</ExtendedDataType>
+                </AxMapBaseField>
+                <AxMapBaseField>
+                  <Name>City</Name>
+                  <ExtendedDataType>LogisticsAddressCity</ExtendedDataType>
+                </AxMapBaseField>
+              </Fields>
+              <Mappings>
+                <AxTableMapping>
+                  <MappingTable>LogisticsPostalAddress</MappingTable>
+                </AxTableMapping>
+                <AxTableMapping>
+                  <MappingTable>LogisticsLocationAddress</MappingTable>
+                </AxTableMapping>
+              </Mappings>
+            </AxMap>
+            """);
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFix11");
+        var map = Assert.Single(batch.Maps);
+        Assert.Equal("DirPartyAddress", map.Name);
+        Assert.Equal(2, map.Fields.Count);
+        Assert.Equal("Street", map.Fields[0].Name);
+        Assert.Equal("LogisticsAddressStreet", map.Fields[0].EdtName);
+        Assert.Equal(2, map.MappedTables.Count);
+        Assert.Contains("LogisticsPostalAddress", map.MappedTables);
+    }
+
+    [Fact]
+    public void ApplyExtract_roundtrips_AxMaps_and_SearchMaps_finds_them()
+    {
+        var repo = new MetadataRepository(_dbPath);
+        repo.EnsureSchema();
+
+        var mapField = new ExtractedMapField("Street", "ExtendedDataType", "LogisticsAddressStreet", null);
+        var map = new ExtractedMap("DirPartyAddress", "@SYS12345", "/model/AxMap/DirPartyAddress.xml",
+            new[] { mapField })
+        {
+            MappedTables = new[] { "LogisticsPostalAddress" },
+        };
+        var batch = ExtractBatch.Empty("ApplicationSuite") with { Maps = new[] { map } };
+
+        repo.ApplyExtract(batch);
+
+        // SearchMaps
+        var hits = repo.SearchMaps("DirParty");
+        var hit = Assert.Single(hits);
+        Assert.Equal("DirPartyAddress", hit.Name);
+        Assert.Equal("ApplicationSuite", hit.Model);
+
+        // GetMap full detail
+        var detail = repo.GetMap("DirPartyAddress");
+        Assert.NotNull(detail);
+        var field = Assert.Single(detail!.Fields);
+        Assert.Equal("Street", field.Name);
+        Assert.Equal("LogisticsAddressStreet", field.EdtName);
+        var table = Assert.Single(detail.MappedTables);
+        Assert.Equal("LogisticsPostalAddress", table);
+
+        // Re-apply is idempotent — no duplicate rows
+        repo.ApplyExtract(batch);
+        Assert.Single(repo.SearchMaps("DirParty"));
+    }
 }
