@@ -14,11 +14,19 @@ namespace D365FO.Core.Index;
 public sealed class MetadataRepository
 {
     /// <summary>Current schema version tracked in PRAGMA user_version.</summary>
-    public const int CurrentSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 10;
 
     private static readonly Lazy<string> SchemaSql = new(LoadEmbeddedSchema);
 
     private readonly string _connectionString;
+    /// <summary>
+    /// Read-only connection string used by all query-only methods. Using
+    /// <see cref="SqliteOpenMode.ReadOnly"/> prevents accidental DB creation
+    /// when the path is wrong and avoids acquiring a write-capable lock on
+    /// read operations, which is important when the index DB is on a shared
+    /// or read-only file system.
+    /// </summary>
+    private readonly string _readOnlyConnectionString;
 
     static MetadataRepository()
     {
@@ -42,6 +50,14 @@ public sealed class MetadataRepository
             Cache = SqliteCacheMode.Private,
             Pooling = true,
         }.ToString();
+
+        _readOnlyConnectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = true,
+        }.ToString();
     }
 
     public string ConnectionString => _connectionString;
@@ -59,58 +75,101 @@ public sealed class MetadataRepository
         var current = conn.ExecuteScalar<long>("PRAGMA user_version");
         if (current == CurrentSchemaVersion) return false;
 
-        conn.Execute(SchemaSql.Value);
+        // Wrap all DDL + migrations in a single transaction so a mid-run crash
+        // (CTRL+C, OOM, power failure) cannot leave the DB in a half-migrated
+        // state where some ALTER TABLE columns exist but user_version is stale.
+        using var tx = conn.BeginTransaction();
+
+        conn.Execute(SchemaSql.Value, transaction: tx);
         // v7 migration: add new columns on pre-existing Models tables. SQLite
         // lacks `ADD COLUMN IF NOT EXISTS`, so we check via PRAGMA table_info
         // rather than relying on a benign exception.
         if (current < 7)
         {
-            var existingCols = conn.Query<string>("SELECT name FROM pragma_table_info('Models')")
+            var existingCols = conn.Query<string>("SELECT name FROM pragma_table_info('Models')", transaction: tx)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (!existingCols.Contains("LastExtractedUtc"))
-                conn.Execute("ALTER TABLE Models ADD COLUMN LastExtractedUtc TEXT");
+                conn.Execute("ALTER TABLE Models ADD COLUMN LastExtractedUtc TEXT", transaction: tx);
             if (!existingCols.Contains("SourceFingerprint"))
-                conn.Execute("ALTER TABLE Models ADD COLUMN SourceFingerprint TEXT");
+                conn.Execute("ALTER TABLE Models ADD COLUMN SourceFingerprint TEXT", transaction: tx);
         }
         if (current < 8)
         {
             // v8: Form pattern columns. Backfilled lazily — extractor will
             // populate them on the next `index extract` / `refresh`.
-            var formCols = conn.Query<string>("SELECT name FROM pragma_table_info('Forms')")
+            var formCols = conn.Query<string>("SELECT name FROM pragma_table_info('Forms')", transaction: tx)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!formCols.Contains("Pattern")) conn.Execute("ALTER TABLE Forms ADD COLUMN Pattern TEXT");
-            if (!formCols.Contains("PatternVersion")) conn.Execute("ALTER TABLE Forms ADD COLUMN PatternVersion TEXT");
-            if (!formCols.Contains("Style")) conn.Execute("ALTER TABLE Forms ADD COLUMN Style TEXT");
-            if (!formCols.Contains("TitleDataSource")) conn.Execute("ALTER TABLE Forms ADD COLUMN TitleDataSource TEXT");
-            var dsCols = conn.Query<string>("SELECT name FROM pragma_table_info('FormDataSources')")
+            if (!formCols.Contains("Pattern")) conn.Execute("ALTER TABLE Forms ADD COLUMN Pattern TEXT", transaction: tx);
+            if (!formCols.Contains("PatternVersion")) conn.Execute("ALTER TABLE Forms ADD COLUMN PatternVersion TEXT", transaction: tx);
+            if (!formCols.Contains("Style")) conn.Execute("ALTER TABLE Forms ADD COLUMN Style TEXT", transaction: tx);
+            if (!formCols.Contains("TitleDataSource")) conn.Execute("ALTER TABLE Forms ADD COLUMN TitleDataSource TEXT", transaction: tx);
+            var dsCols = conn.Query<string>("SELECT name FROM pragma_table_info('FormDataSources')", transaction: tx)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!dsCols.Contains("OrderIndex")) conn.Execute("ALTER TABLE FormDataSources ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0");
-            if (!dsCols.Contains("JoinSource")) conn.Execute("ALTER TABLE FormDataSources ADD COLUMN JoinSource TEXT");
+            if (!dsCols.Contains("OrderIndex")) conn.Execute("ALTER TABLE FormDataSources ADD COLUMN OrderIndex INTEGER NOT NULL DEFAULT 0", transaction: tx);
+            if (!dsCols.Contains("JoinSource")) conn.Execute("ALTER TABLE FormDataSources ADD COLUMN JoinSource TEXT", transaction: tx);
         }
         if (current < 9)
         {
             // v9: Lint-flag columns on Methods / TableMethods. Populated during
             // extract by scanning <Source> text — no full body storage.
-            var methodCols = conn.Query<string>("SELECT name FROM pragma_table_info('Methods')")
+            var methodCols = conn.Query<string>("SELECT name FROM pragma_table_info('Methods')", transaction: tx)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!methodCols.Contains("HasDocComment"))    conn.Execute("ALTER TABLE Methods ADD COLUMN HasDocComment    INTEGER NOT NULL DEFAULT 0");
-            if (!methodCols.Contains("HasTodayCall"))     conn.Execute("ALTER TABLE Methods ADD COLUMN HasTodayCall     INTEGER NOT NULL DEFAULT 0");
-            if (!methodCols.Contains("HasDoInsertOrUpdate")) conn.Execute("ALTER TABLE Methods ADD COLUMN HasDoInsertOrUpdate INTEGER NOT NULL DEFAULT 0");
+            if (!methodCols.Contains("HasDocComment"))    conn.Execute("ALTER TABLE Methods ADD COLUMN HasDocComment    INTEGER NOT NULL DEFAULT 0", transaction: tx);
+            if (!methodCols.Contains("HasTodayCall"))     conn.Execute("ALTER TABLE Methods ADD COLUMN HasTodayCall     INTEGER NOT NULL DEFAULT 0", transaction: tx);
+            if (!methodCols.Contains("HasDoInsertOrUpdate")) conn.Execute("ALTER TABLE Methods ADD COLUMN HasDoInsertOrUpdate INTEGER NOT NULL DEFAULT 0", transaction: tx);
 
-            var tmCols = conn.Query<string>("SELECT name FROM pragma_table_info('TableMethods')")
+            var tmCols = conn.Query<string>("SELECT name FROM pragma_table_info('TableMethods')", transaction: tx)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (!tmCols.Contains("HasDocComment"))    conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasDocComment    INTEGER NOT NULL DEFAULT 0");
-            if (!tmCols.Contains("HasTodayCall"))     conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasTodayCall     INTEGER NOT NULL DEFAULT 0");
-            if (!tmCols.Contains("HasDoInsertOrUpdate")) conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasDoInsertOrUpdate INTEGER NOT NULL DEFAULT 0");
+            if (!tmCols.Contains("HasDocComment"))    conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasDocComment    INTEGER NOT NULL DEFAULT 0", transaction: tx);
+            if (!tmCols.Contains("HasTodayCall"))     conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasTodayCall     INTEGER NOT NULL DEFAULT 0", transaction: tx);
+            if (!tmCols.Contains("HasDoInsertOrUpdate")) conn.Execute("ALTER TABLE TableMethods ADD COLUMN HasDoInsertOrUpdate INTEGER NOT NULL DEFAULT 0", transaction: tx);
         }
-        conn.Execute($"PRAGMA user_version = {CurrentSchemaVersion}");
+        if (current < 10)
+        {
+            // AxMap indexing tables — Maps are field-layout templates used
+            // for cross-module address/party data patterns in D365FO.
+            var hasMaps = conn.Query<string>("SELECT name FROM pragma_table_info('Maps')", transaction: tx).Any();
+            if (!hasMaps)
+            {
+                conn.Execute(@"
+                    CREATE TABLE IF NOT EXISTS Maps (
+                        MapId      INTEGER PRIMARY KEY AUTOINCREMENT,
+                        Name       TEXT NOT NULL,
+                        ModelId    INTEGER NOT NULL,
+                        Label      TEXT,
+                        SourcePath TEXT,
+                        FOREIGN KEY (ModelId) REFERENCES Models(ModelId)
+                    );
+                    CREATE INDEX IF NOT EXISTS IX_Maps_Name ON Maps(Name);
+                    CREATE TABLE IF NOT EXISTS MapFields (
+                        MapFieldId INTEGER PRIMARY KEY AUTOINCREMENT,
+                        MapId      INTEGER NOT NULL,
+                        Name       TEXT NOT NULL,
+                        Type       TEXT,
+                        EdtName    TEXT,
+                        Label      TEXT,
+                        FOREIGN KEY (MapId) REFERENCES Maps(MapId) ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS MapTables (
+                        MapTableId INTEGER PRIMARY KEY AUTOINCREMENT,
+                        MapId      INTEGER NOT NULL,
+                        TableName  TEXT NOT NULL,
+                        FOREIGN KEY (MapId) REFERENCES Maps(MapId) ON DELETE CASCADE
+                    );", transaction: tx);
+            }
+        }
+
+        conn.Execute($"PRAGMA user_version = {CurrentSchemaVersion}", transaction: tx);
         conn.Execute(
             "INSERT OR IGNORE INTO SchemaVersion(Version, AppliedUtc) VALUES(@v, @t)",
-            new { v = CurrentSchemaVersion, t = DateTime.UtcNow.ToString("O") });
+            new { v = CurrentSchemaVersion, t = DateTime.UtcNow.ToString("O") }, transaction: tx);
 
-        // Backfill FTS5 index from pre-existing Labels rows. This is a no-op
-        // when Labels is empty or when the FTS5 mirror is already in sync
-        // (SQLite's rebuild command is cheap in that case).
+        tx.Commit();
+
+        // FTS5 rebuild is intentionally outside the transaction: rebuilding the
+        // virtual table inside a transaction can cause subtle lock contention on
+        // some SQLite builds. A crash here leaves the FTS5 shadow tables in an
+        // out-of-sync state that the next EnsureSchema() run will fix via rebuild.
         try
         {
             conn.Execute("INSERT INTO LabelFts(LabelFts) VALUES('rebuild')");
@@ -125,7 +184,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<ClassInfo> SearchClasses(string query, string? model = null, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         var sql = @"
             SELECT c.ClassId, c.Name, m.Name AS Model, c.ExtendsName AS Extends,
@@ -141,25 +200,27 @@ public sealed class MetadataRepository
 
     public ClassDetails? GetClassDetails(string name)
     {
-        using var conn = Open();
-        var cls = conn.QueryFirstOrDefault<ClassInfo>(@"
+        using var conn = OpenReadOnly();
+        // Execute both queries in one round-trip via QueryMultiple to avoid two
+        // sequential open/close cycles on the connection pool.
+        using var multi = conn.QueryMultiple(@"
             SELECT c.ClassId, c.Name, m.Name AS Model, c.ExtendsName AS Extends,
                    c.IsAbstract, c.IsFinal, c.SourcePath
             FROM Classes c JOIN Models m ON m.ModelId = c.ModelId
-            WHERE c.Name = @name LIMIT 1", new { name });
+            WHERE c.Name = @name LIMIT 1;
+            SELECT mt.Name, mt.Signature, mt.ReturnType, mt.IsStatic
+            FROM Methods mt
+            JOIN Classes c ON c.ClassId = mt.ClassId
+            WHERE c.Name = @name ORDER BY mt.Name", new { name });
+        var cls = multi.ReadFirstOrDefault<ClassInfo>();
         if (cls is null) return null;
-
-        var methods = conn.Query<MethodInfo>(@"
-            SELECT Name, Signature, ReturnType, IsStatic
-            FROM Methods WHERE ClassId = @id ORDER BY Name",
-            new { id = cls.ClassId }).ToList();
-
+        var methods = multi.Read<MethodInfo>().ToList();
         return new ClassDetails(cls, methods);
     }
 
     public TableDetails? GetTableDetails(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var table = conn.QueryFirstOrDefault<TableInfo>(@"
             SELECT t.TableId, t.Name, m.Name AS Model, t.Label, t.SourcePath
             FROM Tables t JOIN Models m ON m.ModelId = t.ModelId
@@ -196,7 +257,7 @@ public sealed class MetadataRepository
 
     public EdtInfo? GetEdt(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.QueryFirstOrDefault<EdtInfo>(@"
             SELECT e.Name, m.Name AS Model, e.ExtendsName AS Extends,
                    e.BaseType, e.Label, e.StringSize
@@ -206,7 +267,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<CocExtensionInfo> FindCocExtensions(string targetClass, string? targetMethod = null)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT c.TargetClass, c.TargetMethod, c.ExtensionClass, m.Name AS Model
             FROM CocExtensions c JOIN Models m ON m.ModelId = c.ModelId
@@ -218,7 +279,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<LabelMatch> SearchLabels(string query, IReadOnlyCollection<string>? languages = null, int limit = 100)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         var langsLower = languages?.Select(l => l.ToLowerInvariant()).ToList();
         var sql = @"
@@ -239,7 +300,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LabelMatch> SearchLabelsFts(string query, IReadOnlyCollection<string>? languages = null, int limit = 100)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var langsLower = languages?.Select(l => l.ToLowerInvariant()).ToList();
         try
         {
@@ -262,7 +323,7 @@ public sealed class MetadataRepository
 
     public MenuItemInfo? GetMenuItem(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.QueryFirstOrDefault<MenuItemInfo>(@"
             SELECT mi.Name, mi.Kind, mi.Object, mi.ObjectType, mi.Label, m.Name AS Model
             FROM MenuItems mi JOIN Models m ON m.ModelId = mi.ModelId
@@ -271,7 +332,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<RelationInfo> GetTableRelations(string table)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<RelationInfo>(@"
             SELECT FromTable, ToTable, Cardinality, RelationName
             FROM Relations WHERE FromTable = @n OR ToTable = @n",
@@ -280,7 +341,7 @@ public sealed class MetadataRepository
 
     public SecurityCoverage GetSecurityCoverage(string objectName, string objectType)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var routes = conn.Query<SecurityRoute>(@"
             SELECT Role, Duty, Privilege, EntryPoint
             FROM SecurityMap
@@ -292,7 +353,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<ObjectExtensionInfo> FindExtensions(string targetName, string? kind = null)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<ObjectExtensionInfo>(@"
             SELECT e.Kind, e.TargetName, e.ExtensionName, m.Name AS Model, e.SourcePath
             FROM ObjectExtensions e JOIN Models m ON m.ModelId = e.ModelId
@@ -303,7 +364,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<EventSubscriberInfo> FindEventSubscribers(string sourceObject, string? sourceKind = null)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<EventSubscriberInfo>(@"
             SELECT s.SubscriberClass, s.SubscriberMethod, s.SourceKind, s.SourceObject,
                    s.SourceMember, s.EventType, m.Name AS Model
@@ -326,7 +387,7 @@ public sealed class MetadataRepository
         string? model = null,
         int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         // Driving datasource = OrderIndex 0 (or any when none populated yet).
         var sql = @"
             SELECT f.Name, f.Pattern, f.PatternVersion, f.Style, f.TitleDataSource,
@@ -361,7 +422,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<FormPatternSummary> SummarizeFormPatterns()
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<FormPatternSummary>(@"
             SELECT CAST(COALESCE(NULLIF(Pattern, ''), '(none)') AS TEXT) AS Pattern,
                    CAST(COUNT(*) AS INTEGER) AS Count
@@ -372,7 +433,7 @@ public sealed class MetadataRepository
 
     public FormDetails? GetForm(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var form = conn.QueryFirstOrDefault<FormInfo>(@"
             SELECT f.FormId, f.Name, m.Name AS Model, f.SourcePath
             FROM Forms f JOIN Models m ON m.ModelId = f.ModelId
@@ -386,7 +447,7 @@ public sealed class MetadataRepository
 
     public SecurityRoleDetails? GetSecurityRole(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var header = conn.QueryFirstOrDefault<(string Name, string? Label, string Model)>(@"
             SELECT r.Name, r.Label, m.Name AS Model
             FROM SecurityRoles r JOIN Models m ON m.ModelId = r.ModelId
@@ -399,7 +460,7 @@ public sealed class MetadataRepository
 
     public SecurityDutyDetails? GetSecurityDuty(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var header = conn.QueryFirstOrDefault<(string Name, string? Label, string Model)>(@"
             SELECT d.Name, d.Label, m.Name AS Model
             FROM SecurityDuties d JOIN Models m ON m.ModelId = d.ModelId
@@ -411,7 +472,7 @@ public sealed class MetadataRepository
 
     public SecurityPrivilegeDetails? GetSecurityPrivilege(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var header = conn.QueryFirstOrDefault<(string Name, string? Label, string Model)>(@"
             SELECT p.Name, p.Label, m.Name AS Model
             FROM SecurityPrivileges p JOIN Models m ON m.ModelId = p.ModelId
@@ -426,7 +487,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<TableMethodInfo> GetTableMethods(string table)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<TableMethodInfo>(@"
             SELECT tm.Name, tm.Signature, tm.ReturnType, tm.IsStatic
             FROM TableMethods tm
@@ -436,7 +497,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<TableIndexInfo> GetTableIndexes(string table)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<TableIndexInfo>(@"
             SELECT ti.Name, ti.AllowDuplicates, ti.AlternateKey, ti.FieldsCsv
             FROM TableIndexes ti
@@ -446,7 +507,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<TableDeleteActionInfo> GetTableDeleteActions(string table)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<TableDeleteActionInfo>(@"
             SELECT da.Name, da.RelatedTable, da.DeleteAction
             FROM TableDeleteActions da
@@ -463,7 +524,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindTablesWithoutIndex(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT t.Name AS TargetName, m.Name AS Model
             FROM Tables t
@@ -483,7 +544,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindExtensionNamedButNotAttributed(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT c.Name AS TargetName, m.Name AS Model
             FROM Classes c
@@ -504,7 +565,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindStringFieldsWithoutEdt(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT (t.Name || '.' || f.Name) AS TargetName, m.Name AS Model, f.Type AS Detail
             FROM TableFields f
@@ -524,7 +585,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindTodayCallMethods(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         // Union class methods and table methods.
         var sql = @"
             SELECT (c.Name || '::' || mt.Name) AS TargetName, m.Name AS Model, 'today()' AS Detail
@@ -551,7 +612,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindDoInsertOrUpdateMethods(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT (c.Name || '::' || mt.Name) AS TargetName, m.Name AS Model, 'doInsert/doUpdate/doDelete' AS Detail
             FROM Methods mt
@@ -577,7 +638,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<LintHit> FindMissingDocCommentMethods(bool onlyCustomModels = true)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT (c.Name || '::' || mt.Name) AS TargetName, m.Name AS Model, 'missing doc-comment' AS Detail
             FROM Methods mt
@@ -601,7 +662,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<QueryInfo> SearchQueries(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<QueryInfo>(@"
             SELECT q.QueryId, q.Name, m.Name AS Model, q.SourcePath
@@ -612,7 +673,7 @@ public sealed class MetadataRepository
 
     public QueryDetails? GetQuery(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var q = conn.QueryFirstOrDefault<QueryInfo>(@"
             SELECT q.QueryId, q.Name, m.Name AS Model, q.SourcePath
             FROM Queries q JOIN Models m ON m.ModelId = q.ModelId
@@ -626,7 +687,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<ViewInfo> SearchViews(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<ViewInfo>(@"
             SELECT v.ViewId, v.Name, m.Name AS Model, v.Label, v.QueryName, v.SourcePath
@@ -637,7 +698,7 @@ public sealed class MetadataRepository
 
     public ViewDetails? GetView(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var v = conn.QueryFirstOrDefault<ViewInfo>(@"
             SELECT v.ViewId, v.Name, m.Name AS Model, v.Label, v.QueryName, v.SourcePath
             FROM Views v JOIN Models m ON m.ModelId = v.ModelId
@@ -651,7 +712,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<DataEntityInfo> SearchDataEntities(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<DataEntityInfo>(@"
             SELECT e.EntityId, e.Name, m.Name AS Model, e.PublicEntityName, e.PublicCollectionName,
@@ -664,7 +725,7 @@ public sealed class MetadataRepository
 
     public DataEntityDetails? GetDataEntity(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var e = conn.QueryFirstOrDefault<DataEntityInfo>(@"
             SELECT e.EntityId, e.Name, m.Name AS Model, e.PublicEntityName, e.PublicCollectionName,
                    e.StagingTable, e.QueryName, e.Label, e.SourcePath
@@ -679,7 +740,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<ReportInfo> SearchReports(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<ReportInfo>(@"
             SELECT r.ReportId, r.Name, r.Kind, m.Name AS Model, r.SourcePath
@@ -690,7 +751,7 @@ public sealed class MetadataRepository
 
     public ReportDetails? GetReport(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var r = conn.QueryFirstOrDefault<ReportInfo>(@"
             SELECT r.ReportId, r.Name, r.Kind, m.Name AS Model, r.SourcePath
             FROM Reports r JOIN Models m ON m.ModelId = r.ModelId
@@ -704,7 +765,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<ServiceInfo> SearchServices(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<ServiceInfo>(@"
             SELECT s.ServiceId, s.Name, s.Class, m.Name AS Model, s.SourcePath
@@ -715,7 +776,7 @@ public sealed class MetadataRepository
 
     public ServiceDetails? GetService(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var s = conn.QueryFirstOrDefault<ServiceInfo>(@"
             SELECT s.ServiceId, s.Name, s.Class, m.Name AS Model, s.SourcePath
             FROM Services s JOIN Models m ON m.ModelId = s.ModelId
@@ -729,7 +790,7 @@ public sealed class MetadataRepository
 
     public ServiceGroupDetails? GetServiceGroup(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var g = conn.QueryFirstOrDefault<ServiceGroupInfo>(@"
             SELECT g.GroupId, g.Name, m.Name AS Model, g.SourcePath
             FROM ServiceGroups g JOIN Models m ON m.ModelId = g.ModelId
@@ -743,7 +804,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<WorkflowTypeInfo> SearchWorkflowTypes(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<WorkflowTypeInfo>(@"
             SELECT w.Name, w.Category, w.DocumentClass, m.Name AS Model, w.SourcePath
@@ -753,9 +814,45 @@ public sealed class MetadataRepository
             new { like, limit }).ToList();
     }
 
+    // ---- AxMap queries (v10) ----
+
+    /// <summary>Search for AxMap objects by name (LIKE wildcard).</summary>
+    public IReadOnlyList<MapInfo> SearchMaps(string query, int limit = 50)
+    {
+        using var conn = OpenReadOnly();
+        var like = $"%{query}%";
+        return conn.Query<MapInfo>(@"
+            SELECT mp.MapId, mp.Name, m.Name AS Model, mp.Label, mp.SourcePath
+            FROM Maps mp JOIN Models m ON m.ModelId = mp.ModelId
+            WHERE mp.Name LIKE @like
+            ORDER BY mp.Name LIMIT @limit",
+            new { like, limit }).ToList();
+    }
+
+    /// <summary>Returns full details of an AxMap including fields and mapped tables.</summary>
+    public MapDetails? GetMap(string name)
+    {
+        using var conn = OpenReadOnly();
+        using var multi = conn.QueryMultiple(@"
+            SELECT mp.MapId, mp.Name, m.Name AS Model, mp.Label, mp.SourcePath
+            FROM Maps mp JOIN Models m ON m.ModelId = mp.ModelId
+            WHERE mp.Name = @name LIMIT 1;
+            SELECT f.Name, f.Type, f.EdtName, f.Label
+            FROM MapFields f JOIN Maps mp ON mp.MapId = f.MapId
+            WHERE mp.Name = @name ORDER BY f.Name;
+            SELECT mt.TableName FROM MapTables mt
+            JOIN Maps mp ON mp.MapId = mt.MapId
+            WHERE mp.Name = @name ORDER BY mt.TableName", new { name });
+        var map = multi.ReadFirstOrDefault<MapInfo>();
+        if (map is null) return null;
+        var fields = multi.Read<MapFieldInfo>().ToList();
+        var tables = multi.Read<string>().ToList();
+        return new MapDetails(map, fields, tables);
+    }
+
     public IReadOnlyList<ModelInfo> ListModels()
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.Query<ModelInfo>(@"
             SELECT ModelId, Name, Publisher, Layer, IsCustom
             FROM Models ORDER BY Name").ToList();
@@ -763,7 +860,7 @@ public sealed class MetadataRepository
 
     public ModelDependencies? GetModelDependencies(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var mi = conn.QueryFirstOrDefault<ModelInfo>(@"
             SELECT ModelId, Name, Publisher, Layer, IsCustom
             FROM Models WHERE Name = @name LIMIT 1", new { name });
@@ -784,35 +881,38 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyDictionary<string, IReadOnlyList<string>> GetDependencyGraph()
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var rows = conn.Query<(string Source, string Target)>(@"
             SELECT m.Name AS Source, d.Target AS Target
             FROM ModelDependencies d
             JOIN Models m ON m.ModelId = d.ModelId");
-        var graph = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        // Use per-node HashSet<string> for O(1) duplicate detection instead of
+        // List.Contains which is O(n) per edge, giving O(n²) overall for large graphs.
+        var seen = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var r in rows)
         {
-            if (!graph.TryGetValue(r.Source, out var list))
+            if (!seen.TryGetValue(r.Source, out var set))
             {
-                list = new List<string>();
-                graph[r.Source] = list;
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                seen[r.Source] = set;
             }
-            if (!list.Contains(r.Target, StringComparer.OrdinalIgnoreCase))
-                list.Add(r.Target);
+            set.Add(r.Target);
         }
+        var graph = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in seen) graph[kv.Key] = kv.Value.ToList();
         // Ensure every model is a node even if it has no outgoing edges.
         foreach (var m in conn.Query<string>("SELECT Name FROM Models"))
         {
-            if (!graph.ContainsKey(m)) graph[m] = new List<string>();
+            if (!graph.ContainsKey(m)) graph[m] = Array.Empty<string>();
         }
-        return graph.ToDictionary(kv => kv.Key, kv => (IReadOnlyList<string>)kv.Value, StringComparer.OrdinalIgnoreCase);
+        return graph;
     }
 
     // ---- additional read operations ----
 
     public IReadOnlyList<TableInfo> SearchTables(string query, string? model = null, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<TableInfo>(@"
             SELECT t.TableId, t.Name, m.Name AS Model, t.Label, t.SourcePath
@@ -825,7 +925,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<EdtInfo> SearchEdts(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<EdtInfo>(@"
             SELECT e.Name, m.Name AS Model, e.ExtendsName AS Extends,
@@ -838,7 +938,7 @@ public sealed class MetadataRepository
 
     public IReadOnlyList<EnumInfo> SearchEnums(string query, int limit = 50)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{query}%";
         return conn.Query<EnumInfo>(@"
             SELECT e.Name, m.Name AS Model, e.Label
@@ -850,7 +950,7 @@ public sealed class MetadataRepository
 
     public EnumDetails? GetEnum(string name)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var en = conn.QueryFirstOrDefault<EnumHeaderRow>(@"
             SELECT e.EnumId AS EnumId, e.Name AS Name, m.Name AS Model, e.Label AS Label
             FROM Enums e JOIN Models m ON m.ModelId = e.ModelId
@@ -868,7 +968,7 @@ public sealed class MetadataRepository
 
     public LabelMatch? GetLabel(string file, string language, string key)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return conn.QueryFirstOrDefault<LabelMatch>(@"
             SELECT LabelFile AS File, Language, Key, Value
             FROM Labels
@@ -898,7 +998,7 @@ public sealed class MetadataRepository
         // Normalize to lowercase so both 'en-US' (Windows filesystem) and 'en-us'
         // (Linux filesystem, Microsoft packages) match the caller's request.
         var langsLower = languages?.Select(l => l.ToLowerInvariant()).ToList();
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         // Try two shapes: Key == raw (e.g. "SYS12345") in file=prefix,
         // or Key == suffix (e.g. "12345") in file=prefix. Fall back to
         // exact key match across all files for odd prefixes.
@@ -921,7 +1021,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<(string Kind, string Name, string Model)> FindUsages(string needle, int limit = 100)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var like = $"%{needle}%";
         var rows = conn.Query<UsageRow>(@"
             SELECT 'Table' AS Kind, t.Name AS Name, m.Name AS Model FROM Tables t JOIN Models m ON m.ModelId=t.ModelId WHERE t.Name LIKE @like
@@ -959,7 +1059,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyList<(string Kind, string Name, string Model, string SourcePath)> EnumerateSourcePaths(string? modelFilter = null)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"
             SELECT 'Class' AS Kind, c.Name AS Name, m.Name AS Model, c.SourcePath AS SourcePath
               FROM Classes c JOIN Models m ON m.ModelId=c.ModelId
@@ -997,7 +1097,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IReadOnlyDictionary<string, string?> GetModelFingerprints()
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var rows = conn.Query<(string Name, string? SourceFingerprint)>(
             "SELECT Name, SourceFingerprint FROM Models");
         var map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -1033,7 +1133,7 @@ public sealed class MetadataRepository
     /// <summary>Recent <c>ExtractionRuns</c>, newest first.</summary>
     public IReadOnlyList<ExtractionRunRow> GetExtractionRuns(int limit = 200, string? model = null)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         var sql = @"SELECT RunId, StartedUtc, Model, ElapsedMs, Tables, Classes, Edts, Enums, Labels, IsCustom
                     FROM ExtractionRuns
                     WHERE (@model IS NULL OR Model = @model)
@@ -1148,6 +1248,11 @@ public sealed class MetadataRepository
         conn.Execute("DELETE FROM ServiceGroupMembers WHERE GroupId IN (SELECT GroupId FROM ServiceGroups WHERE ModelId=@m)", new { m = modelId }, tx);
         conn.Execute("DELETE FROM ServiceGroups WHERE ModelId=@m", new { m = modelId }, tx);
         conn.Execute("DELETE FROM WorkflowTypes WHERE ModelId=@m", new { m = modelId }, tx);
+        // Delete Maps children explicitly: ON DELETE CASCADE is present on fresh schemas but
+        // may be absent on DBs created before this migration, so we cascade manually.
+        conn.Execute("DELETE FROM MapFields WHERE MapId IN (SELECT MapId FROM Maps WHERE ModelId=@m)", new { m = modelId }, tx);
+        conn.Execute("DELETE FROM MapTables WHERE MapId IN (SELECT MapId FROM Maps WHERE ModelId=@m)", new { m = modelId }, tx);
+        conn.Execute("DELETE FROM Maps WHERE ModelId=@m", new { m = modelId }, tx);
         conn.Execute("DELETE FROM ModelDependencies WHERE ModelId=@m", new { m = modelId }, tx);
         // Labels are keyed by file+lang, not model; we delete by file instead.
         foreach (var file in batch.Labels.Select(l => l.File).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -1376,6 +1481,24 @@ public sealed class MetadataRepository
                            VALUES(@n, @c, @d, @m, @p)",
                          new { n = w.Name, c = w.Category, d = w.DocumentClass, m = modelId, p = w.SourcePath }, tx);
         }
+        foreach (var map in batch.Maps)
+        {
+            conn.Execute(@"INSERT INTO Maps(Name, ModelId, Label, SourcePath)
+                           VALUES(@n, @m, @l, @p)",
+                         new { n = map.Name, m = modelId, l = map.Label, p = map.SourcePath }, tx);
+            var mapId = conn.ExecuteScalar<long>("SELECT last_insert_rowid()", transaction: tx);
+            foreach (var f in map.Fields)
+            {
+                conn.Execute(@"INSERT INTO MapFields(MapId, Name, Type, EdtName, Label)
+                               VALUES(@mid, @n, @ty, @e, @l)",
+                             new { mid = mapId, n = f.Name, ty = f.Type, e = f.EdtName, l = f.Label }, tx);
+            }
+            foreach (var tname in map.MappedTables)
+            {
+                conn.Execute("INSERT INTO MapTables(MapId, TableName) VALUES(@mid, @t)",
+                             new { mid = mapId, t = tname }, tx);
+            }
+        }
         foreach (var dep in batch.Dependencies.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             conn.Execute(@"INSERT INTO ModelDependencies(ModelId, Target) VALUES(@m, @t)",
@@ -1419,7 +1542,7 @@ public sealed class MetadataRepository
 
     public ExtractCounts CountAll()
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
         return new ExtractCounts(
             Models: conn.ExecuteScalar<long>("SELECT COUNT(*) FROM Models"),
             Tables: conn.ExecuteScalar<long>("SELECT COUNT(*) FROM Tables"),
@@ -1455,7 +1578,7 @@ public sealed class MetadataRepository
     /// </summary>
     public IndexStats GetStats(int topN = 10)
     {
-        using var conn = Open();
+        using var conn = OpenReadOnly();
 
         var perModel = conn.Query<PerModelStat>(@"
             SELECT m.Name AS Model, m.IsCustom AS IsCustom,
@@ -1511,6 +1634,23 @@ public sealed class MetadataRepository
         return conn;
     }
 
+    /// <summary>
+    /// Opens a read-only connection to the index database. Used by all pure
+    /// query methods to avoid acquiring a write-capable lock unnecessarily.
+    /// Falls back to <see cref="Open"/> when the database does not yet exist
+    /// (i.e. during <see cref="EnsureSchema"/> bootstrapping) — callers of
+    /// this method must therefore have previously called EnsureSchema().
+    /// </summary>
+    private SqliteConnection OpenReadOnly()
+    {
+        var conn = new SqliteConnection(_readOnlyConnectionString);
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA foreign_keys = ON;";
+        cmd.ExecuteNonQuery();
+        return conn;
+    }
+
     private static string LoadEmbeddedSchema()
     {
         var asm = typeof(MetadataRepository).Assembly;
@@ -1522,3 +1662,4 @@ public sealed class MetadataRepository
         return r.ReadToEnd();
     }
 }
+

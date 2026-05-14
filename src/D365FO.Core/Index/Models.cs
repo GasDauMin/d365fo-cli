@@ -218,3 +218,14 @@ public sealed record ServiceGroupInfo(long GroupId, string Name, string Model, s
 public sealed record ServiceGroupDetails(ServiceGroupInfo Group, IReadOnlyList<string> Members);
 
 public sealed record WorkflowTypeInfo(string Name, string? Category, string? DocumentClass, string Model, string? SourcePath);
+
+// ---- AxMap DTOs (v10) ---------------------------------------------------
+
+/// <summary>Summary info about a D365FO AxMap object.</summary>
+public sealed record MapInfo(long MapId, string Name, string Model, string? Label, string? SourcePath);
+
+/// <summary>A field defined on an AxMap.</summary>
+public sealed record MapFieldInfo(string Name, string? Type, string? EdtName, string? Label);
+
+/// <summary>Full detail of an AxMap including fields and mapped tables.</summary>
+public sealed record MapDetails(MapInfo Map, IReadOnlyList<MapFieldInfo> Fields, IReadOnlyList<string> MappedTables);

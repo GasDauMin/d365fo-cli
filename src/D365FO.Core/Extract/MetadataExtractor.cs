@@ -173,6 +173,7 @@ public sealed class MetadataExtractor
         var services = ReadAll(Path.Combine(modelRoot, "AxService"), ParseService);
         var serviceGroups = ReadAll(Path.Combine(modelRoot, "AxServiceGroup"), ParseServiceGroup);
         var workflowTypes = ReadAll(Path.Combine(modelRoot, "AxWorkflowType"), ParseWorkflowType);
+        var maps = ReadAll(Path.Combine(modelRoot, "AxMap"), ParseMap);
 
         return new ExtractBatch(
             Model: modelName,
@@ -200,6 +201,7 @@ public sealed class MetadataExtractor
             Services = services,
             ServiceGroups = serviceGroups,
             WorkflowTypes = workflowTypes,
+            Maps = maps,
         };
     }
 
@@ -231,6 +233,7 @@ public sealed class MetadataExtractor
             "AxMenuItemDisplay", "AxMenuItemAction", "AxMenuItemOutput",
             "AxQuery", "AxQuerySimple", "AxView", "AxDataEntityView",
             "AxReport", "AxReportSsrs", "AxService", "AxServiceGroup", "AxWorkflowType",
+            "AxMap",
         })
             if (Directory.Exists(Path.Combine(dir, s))) return true;
         return false;
@@ -276,6 +279,23 @@ public sealed class MetadataExtractor
 
     private static IEnumerable<XElement> Children(XElement e, string name) =>
         e.Elements().Where(x => x.Name.LocalName == name);
+
+    /// <summary>
+    /// Strips single-line X++ comments (<c>// ...</c>) and double-quoted string
+    /// literals from a source snippet before pattern-matching for lint heuristics.
+    /// Prevents false positives where forbidden calls appear only in comments or
+    /// error-message strings (e.g. <c>// today() is deprecated</c>).
+    /// </summary>
+    private static string StripCommentsAndStrings(string source)
+    {
+        // Replace each // … comment with spaces so character offsets stay stable.
+        var withoutLineComments = System.Text.RegularExpressions.Regex.Replace(
+            source, @"//[^\n]*", m => new string(' ', m.Length));
+        // Replace double-quoted string literals with empty strings.
+        var withoutStrings = System.Text.RegularExpressions.Regex.Replace(
+            withoutLineComments, @"""(?:[^""\\]|\\.)*""", "\"\"");
+        return withoutStrings;
+    }
 
     private static ExtractedTable? ParseTable(XDocument doc, string file)
     {
@@ -323,7 +343,10 @@ public sealed class MetadataExtractor
             {
                 var iname = Local(ie, "Name");
                 if (string.IsNullOrEmpty(iname)) continue;
-                var allowDup = !string.Equals(Local(ie, "AllowDuplicates"), "No", StringComparison.OrdinalIgnoreCase);
+                // "Yes" = duplicates allowed. Missing element means the D365FO default,
+                // which is "No" (unique). The previous negation !="No" was inverting this
+                // default — fixing to a positive "=="Yes"" test.
+                var allowDup = string.Equals(Local(ie, "AllowDuplicates"), "Yes", StringComparison.OrdinalIgnoreCase);
                 var altKey = string.Equals(Local(ie, "AlternateKey"), "Yes", StringComparison.OrdinalIgnoreCase);
                 var idxFieldsContainer = ie.Elements().FirstOrDefault(x => x.Name.LocalName == "Fields");
                 var idxFields = new List<string>();
@@ -373,8 +396,11 @@ public sealed class MetadataExtractor
         var extends = Local(root, "Extends");
         var decl = root.Descendants().FirstOrDefault(x => x.Name.LocalName == "SourceCode")
                     ?.Elements().FirstOrDefault(x => x.Name.LocalName == "Declaration")?.Value ?? string.Empty;
-        var isAbstract = decl.Contains(" abstract ", StringComparison.Ordinal);
-        var isFinal = decl.Contains(" final ", StringComparison.Ordinal);
+        // Use word-boundary patterns so that "public abstract\nclass" (newline) or
+        // "public abstract\tclass" (tab) are correctly detected. The previous " abstract "
+        // space-delimited check silently missed those variants.
+        var isAbstract = System.Text.RegularExpressions.Regex.IsMatch(decl, @"\babstract\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var isFinal    = System.Text.RegularExpressions.Regex.IsMatch(decl, @"\bfinal\b",    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
         var (methods, methodSources) = ExtractMethodsWithSources(root);
 
@@ -421,10 +447,15 @@ public sealed class MetadataExtractor
             var returnType = InferReturnType(signature);
             var isStatic = signature.Contains(" static ", StringComparison.Ordinal);
             var hasDocComment     = source.Contains("/// <summary>", StringComparison.OrdinalIgnoreCase);
-            var hasTodayCall      = source.Contains("today()", StringComparison.OrdinalIgnoreCase);
-            var hasDoInsertUpdate = source.Contains("doInsert(", StringComparison.OrdinalIgnoreCase)
-                                 || source.Contains("doUpdate(", StringComparison.OrdinalIgnoreCase)
-                                 || source.Contains("doDelete(", StringComparison.OrdinalIgnoreCase);
+            // Strip single-line comments and string literals before checking for
+            // forbidden call patterns so that commented-out code (// today()) or
+            // error messages (str s = "today() is deprecated") don't create false
+            // lint positives.
+            var codeOnly = StripCommentsAndStrings(source);
+            var hasTodayCall      = codeOnly.Contains("today()", StringComparison.OrdinalIgnoreCase);
+            var hasDoInsertUpdate = codeOnly.Contains("doInsert(", StringComparison.OrdinalIgnoreCase)
+                                 || codeOnly.Contains("doUpdate(", StringComparison.OrdinalIgnoreCase)
+                                 || codeOnly.Contains("doDelete(", StringComparison.OrdinalIgnoreCase);
             methods.Add(new ExtractedMethod(mname!, signature, returnType, isStatic,
                 hasDocComment, hasTodayCall, hasDoInsertUpdate));
             sources.Add((mname!, source));
@@ -883,6 +914,9 @@ public sealed class MetadataExtractor
             {
                 var obj = Local(ep, "ObjectName");
                 if (string.IsNullOrEmpty(obj)) continue;
+                // Skip entry points explicitly disabled in the AOT XML.
+                // Including them would overstate the privilege's actual access surface.
+                if (string.Equals(Local(ep, "Enabled"), "No", StringComparison.OrdinalIgnoreCase)) continue;
                 eps.Add(new ExtractedSecurityEntryPoint(
                     obj!,
                     Local(ep, "ObjectType"),
@@ -1070,5 +1104,50 @@ public sealed class MetadataExtractor
             Local(root, "Category"),
             Local(root, "DocumentClass") ?? Local(root, "Document"),
             file);
+    }
+
+    // -------- maps --------
+
+    /// <summary>
+    /// Parses an AxMap XML file and returns the extracted map metadata.
+    /// AxMap objects share a field layout across multiple tables and are
+    /// commonly used for cross-module integration patterns in D365FO
+    /// (e.g., <c>DirPartyAddress</c>, <c>LogisticsPostalAddress</c>).
+    /// </summary>
+    private static ExtractedMap? ParseMap(XDocument doc, string file)
+    {
+        var root = doc.Root;
+        if (root is null) return null;
+        var name = Local(root, "Name") ?? Path.GetFileNameWithoutExtension(file);
+
+        // Fields live in <Fields> → child elements whose local name is the field type
+        var fieldsEl = root.Elements().FirstOrDefault(e => e.Name.LocalName == "Fields");
+        var fields = new List<ExtractedMapField>();
+        if (fieldsEl is not null)
+        {
+            foreach (var f in fieldsEl.Elements())
+            {
+                var fn = Local(f, "Name");
+                if (string.IsNullOrEmpty(fn)) continue;
+                fields.Add(new ExtractedMapField(fn!, Local(f, "ExtendedDataType") ?? f.Name.LocalName, Local(f, "ExtendedDataType"), Local(f, "Label")));
+            }
+        }
+
+        // Mapped tables live in <Mappings> → <AxTableMapping> → <MappingTable>
+        var mappingsEl = root.Elements().FirstOrDefault(e => e.Name.LocalName == "Mappings");
+        var mappedTables = new List<string>();
+        if (mappingsEl is not null)
+        {
+            foreach (var m in mappingsEl.Elements())
+            {
+                var tname = Local(m, "MappingTable") ?? Local(m, "Table");
+                if (!string.IsNullOrEmpty(tname)) mappedTables.Add(tname!);
+            }
+        }
+
+        return new ExtractedMap(name, Local(root, "Label"), file, fields)
+        {
+            MappedTables = mappedTables,
+        };
     }
 }

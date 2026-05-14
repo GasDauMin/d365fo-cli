@@ -23,6 +23,34 @@ public class StringSanitizerTests
     {
         Assert.Null(StringSanitizer.Sanitize(null));
     }
+
+    [Theory]
+    [InlineData("\u200BHello")]        // zero-width space
+    [InlineData("Hello\u200F")]        // right-to-left mark
+    [InlineData("\u202EHello")]        // right-to-left override (classic "evil" char)
+    [InlineData("\uFEFFHello")]        // BOM / zero-width no-break space
+    [InlineData("Hel\u2060lo")]        // word joiner
+    [InlineData("He\u200Bllo\u202E")] // combination
+    public void Strips_unicode_format_chars_used_for_injection(string input)
+    {
+        var result = StringSanitizer.Sanitize(input);
+        // None of the injected chars should survive
+        Assert.DoesNotContain('\u200B', result!);
+        Assert.DoesNotContain('\u200F', result!);
+        Assert.DoesNotContain('\u202E', result!);
+        Assert.DoesNotContain('\uFEFF', result!);
+        Assert.DoesNotContain('\u2060', result!);
+        // Printable content must be preserved
+        Assert.Contains("Hello", result!);
+    }
+
+    [Fact]
+    public void Preserves_content_after_format_char_removal()
+    {
+        // Simulates a label where a BOM was prepended and a direction override appended
+        var input = "\uFEFFVehicle Identification Number\u202E";
+        Assert.Equal("Vehicle Identification Number", StringSanitizer.Sanitize(input));
+    }
 }
 
 public class ToolResultTests

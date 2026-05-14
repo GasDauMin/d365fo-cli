@@ -32,6 +32,8 @@ public sealed record ExtractBatch(
     public IReadOnlyList<ExtractedServiceGroup> ServiceGroups { get; init; } = Array.Empty<ExtractedServiceGroup>();
     public IReadOnlyList<ExtractedWorkflowType> WorkflowTypes { get; init; } = Array.Empty<ExtractedWorkflowType>();
     public IReadOnlyList<string> Dependencies { get; init; } = Array.Empty<string>();
+    /// <summary>AxMap objects found in the model's AxMap folder.</summary>
+    public IReadOnlyList<ExtractedMap> Maps { get; init; } = Array.Empty<ExtractedMap>();
 
     public static ExtractBatch Empty(string model) => new(
         model, null, null, false,
@@ -77,6 +79,15 @@ public sealed record ExtractedEnumValue(string Name, int? Value, string? Label);
 public sealed record ExtractedMenuItem(string Name, string Kind, string? Object, string? ObjectType, string? Label);
 public sealed record ExtractedCoc(string TargetClass, string TargetMethod, string ExtensionClass);
 public sealed record ExtractedLabel(string File, string Language, string Key, string? Value);
+
+/// <summary>A D365FO AxMap object — a shared field template mapped onto multiple tables.</summary>
+public sealed record ExtractedMap(string Name, string? Label, string? SourcePath, IReadOnlyList<ExtractedMapField> Fields)
+{
+    /// <summary>Names of the tables that implement this map.</summary>
+    public IReadOnlyList<string> MappedTables { get; init; } = Array.Empty<string>();
+}
+/// <summary>A field on an <see cref="ExtractedMap"/>.</summary>
+public sealed record ExtractedMapField(string Name, string? Type, string? EdtName, string? Label);
 
 public sealed record ExtractedForm(string Name, string? SourcePath, IReadOnlyList<ExtractedFormDataSource> DataSources)
 {

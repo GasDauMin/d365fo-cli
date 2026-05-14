@@ -66,9 +66,11 @@ public sealed class SearchLabelCommand : Command<SearchLabelCommand.Settings>
             ? null
             : settings.Languages.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        var matches = settings.Fts
-            ? repo.SearchLabelsFts(settings.Query, langs, settings.Limit)
-            : repo.SearchLabels(settings.Query, langs, settings.Limit);
+        // FTS5 is always preferred: SearchLabelsFts() auto-falls-back to LIKE when
+        // the SQLite build lacks FTS5.  The --fts flag is kept for back-compat but
+        // no longer changes behaviour.  Remove the ternary to avoid the footgun where
+        // a default `d365fo search label` call bypasses the faster FTS5 path.
+        var matches = repo.SearchLabelsFts(settings.Query, langs, settings.Limit);
         if (!settings.RawText)
         {
             matches = matches.Select(m => m with { Value = StringSanitizer.Sanitize(m.Value) }).ToList();

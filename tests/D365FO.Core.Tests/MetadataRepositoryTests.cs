@@ -1,4 +1,6 @@
 using D365FO.Core.Index;
+using Microsoft.Data.Sqlite;
+using System.Linq;
 using Xunit;
 
 namespace D365FO.Core.Tests;
@@ -97,5 +99,60 @@ public class MetadataRepositoryTests : IDisposable
         // Re-apply without fingerprint should NOT wipe it (COALESCE in UPDATE).
         repo.ApplyExtract(ExtractBatch.Empty("Contoso") with { IsCustom = true }, sourceFingerprint: null);
         Assert.Equal("42:1234567890", repo.GetModelFingerprints()["Contoso"]);
+    }
+
+    [Fact]
+    public void GetDependencyGraph_deduplicates_edges()
+    {
+        var repo = new MetadataRepository(_dbPath);
+        repo.EnsureSchema();
+
+        // Insert two models and manually add duplicate dependency rows via raw SQL.
+        repo.UpsertModel("Fleet", null, null, true);
+        repo.UpsertModel("ApplicationSuite", null, null, false);
+
+        using var conn = new SqliteConnection($"Data Source={_dbPath}");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        // Deliberately insert the same dependency edge twice to simulate re-extraction.
+        cmd.CommandText = @"
+            INSERT INTO ModelDependencies(ModelId, Target)
+                SELECT ModelId, 'ApplicationSuite' FROM Models WHERE Name='Fleet';
+            INSERT INTO ModelDependencies(ModelId, Target)
+                SELECT ModelId, 'ApplicationSuite' FROM Models WHERE Name='Fleet';";
+        cmd.ExecuteNonQuery();
+
+        var graph = repo.GetDependencyGraph();
+        var fleetDeps = graph["Fleet"];
+        // Must deduplicate: only one entry for ApplicationSuite despite two DB rows.
+        Assert.Single(fleetDeps, d => string.Equals(d, "ApplicationSuite", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void GetClassDetails_returns_class_and_methods()
+    {
+        var repo = new MetadataRepository(_dbPath);
+        repo.EnsureSchema();
+
+        var batch = ExtractBatch.Empty("Fleet") with
+        {
+            Classes = new[]
+            {
+                new ExtractedClass("FleetService", null, false, true, "/x.xml",
+                    new[]
+                    {
+                        new ExtractedMethod("run", "public void run()", "void", false),
+                        new ExtractedMethod("init", "public void init()", "void", false),
+                    })
+            }
+        };
+        repo.ApplyExtract(batch);
+
+        var detail = repo.GetClassDetails("FleetService");
+        Assert.NotNull(detail);
+        Assert.Equal("FleetService", detail!.Class.Name);
+        Assert.Equal(2, detail.Methods.Count);
+        Assert.Contains(detail.Methods, m => m.Name == "run");
+        Assert.Contains(detail.Methods, m => m.Name == "init");
     }
 }
