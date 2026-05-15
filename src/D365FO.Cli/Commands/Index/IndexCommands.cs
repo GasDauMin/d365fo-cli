@@ -175,7 +175,7 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
             foreach (var modelDir in modelDirs)
             {
                 var model = Path.GetFileName(modelDir)!;
-                var fp = ComputeFingerprint(modelDir);
+                var fp = ComputeFingerprint(modelDir, cfg.LabelLanguages);
                 if (since.HasValue && NewestMtime(modelDir) is { } newest && newest < since.Value)
                 {
                     skippedCount++;
@@ -290,18 +290,28 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
 
     /// <summary>
     /// Cheap per-model content fingerprint used by <c>d365fo index refresh</c>.
-    /// Format: <c>"{fileCount}:{newestMtimeTicks}"</c>. Sensitive enough to
-    /// catch touches (re-export, rebase, partial sync) without paying the cost
-    /// of hashing every byte. The trade-off is documented in ROADMAP §1.1.
+    /// Format: <c>"{fileCount}:{newestMtimeTicks}:{langs}"</c>. Sensitive enough
+    /// to catch touches (re-export, rebase, partial sync) without paying the
+    /// cost of hashing every byte. The trade-off is documented in ROADMAP §1.1.
+    /// <para>
+    /// Both <c>*.xml</c> and <c>*.label.txt</c> files are included so that
+    /// label-only changes (new translations, deletions) are not silently skipped.
+    /// The sorted <paramref name="labelLanguages"/> suffix ensures that adding
+    /// a language to <c>D365FO_LABEL_LANGUAGES</c> forces re-extraction even
+    /// when the underlying files have not changed.
+    /// </para>
     /// </summary>
-    internal static string ComputeFingerprint(string dir)
+    internal static string ComputeFingerprint(string dir, IReadOnlyList<string>? labelLanguages = null)
     {
         long newestTicks = 0;
         int count = 0;
         try
         {
-            foreach (var f in Directory.EnumerateFiles(dir, "*.xml", SearchOption.AllDirectories))
+            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
             {
+                if (!f.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
+                    && !f.EndsWith(".label.txt", StringComparison.OrdinalIgnoreCase))
+                    continue;
                 count++;
                 try
                 {
@@ -312,7 +322,10 @@ public sealed class IndexExtractCommand : Command<IndexExtractCommand.Settings>
             }
         }
         catch { }
-        return $"{count}:{newestTicks}";
+        var langs = labelLanguages is { Count: > 0 }
+            ? string.Join(",", labelLanguages.Select(l => l.ToLowerInvariant()).OrderBy(l => l))
+            : "";
+        return $"{count}:{newestTicks}:{langs}";
     }
 
     private static IEnumerable<string> EnumerateModelDirs(string packagesRoot, string? onlyModel)
