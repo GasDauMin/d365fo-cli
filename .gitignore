@@ -1,6 +1,7 @@
 bin/
 obj/
 out/
+data/
 publish/
 *.user
 .vs/
@@ -12,3 +13,4 @@ coverage/
 *.trx
 .DS_Store
 *.log
+*.lscache
