@@ -304,7 +304,7 @@ public sealed class MetadataExtractor
         var name = Local(root, "Name") ?? Path.GetFileNameWithoutExtension(file);
         var label = Local(root, "Label");
         var fields = new List<ExtractedTableField>();
-        var fieldsContainer = root.Descendants().FirstOrDefault(x => x.Name.LocalName == "Fields");
+        var fieldsContainer = root.Elements().FirstOrDefault(x => x.Name.LocalName == "Fields");
         if (fieldsContainer is not null)
         {
             foreach (var fe in fieldsContainer.Elements().Where(x => x.Name.LocalName.StartsWith("AxTableField", StringComparison.Ordinal)))

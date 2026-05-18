@@ -196,6 +196,45 @@ public class ExtractPipelineTests : IDisposable
     }
 
     [Fact]
+    public void MetadataExtractor_reads_table_fields_when_FieldGroups_precede_Fields()
+    {
+        // Regression: FieldGroups contain their own <Fields> children.
+        // The extractor must pick the root-level <Fields>, not a nested one.
+        var model = Path.Combine(_workRoot, "PkgFG", "PkgFG");
+        Directory.CreateDirectory(Path.Combine(model, "AxTable"));
+        File.WriteAllText(Path.Combine(model, "AxTable", "TWithFG.xml"), """
+            <AxTable>
+              <Name>TWithFG</Name>
+              <FieldGroups>
+                <AxTableFieldGroup>
+                  <Name>AutoReport</Name>
+                  <Fields>
+                    <AxTableFieldGroupField><DataField>AccountNum</DataField></AxTableFieldGroupField>
+                  </Fields>
+                </AxTableFieldGroup>
+              </FieldGroups>
+              <Fields>
+                <AxTableFieldString>
+                  <Name>AccountNum</Name>
+                  <ExtendedDataType>CustAccount</ExtendedDataType>
+                  <Mandatory>Yes</Mandatory>
+                </AxTableFieldString>
+                <AxTableFieldString>
+                  <Name>Name</Name>
+                  <ExtendedDataType>Name</ExtendedDataType>
+                </AxTableFieldString>
+              </Fields>
+            </AxTable>
+            """);
+        var batches = new MetadataExtractor().ExtractAll(_workRoot).ToList();
+        var batch = batches.Single(b => b.Model == "PkgFG");
+        var table = Assert.Single(batch.Tables);
+        Assert.Equal(2, table.Fields.Count);
+        Assert.Equal("AccountNum", table.Fields[0].Name);
+        Assert.Equal("Name", table.Fields[1].Name);
+    }
+
+    [Fact]
     public void MetadataExtractor_detects_abstract_with_newline_in_declaration()
     {
         var model = Path.Combine(_workRoot, "PkgFix4", "PkgFix4");
