@@ -1,4 +1,5 @@
 using System.Xml.Linq;
+using D365FO.Core.Guardrails;
 
 namespace D365FO.Core.Scaffolding;
 
@@ -727,6 +728,11 @@ public static class ScaffoldFileWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
         var full = Path.GetFullPath(path);
+
+        // Prevent directory traversal: output must stay within packages or workspace.
+        var cfg = D365FoSettings.FromEnvironment();
+        PathGuard.EnsureWithinBoundary(full, cfg.PackagesPath, cfg.WorkspacePath);
+
         var dir = Path.GetDirectoryName(full);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 

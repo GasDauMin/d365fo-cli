@@ -1,4 +1,5 @@
 using System.Text;
+using D365FO.Core.Guardrails;
 
 namespace D365FO.Core.Labels;
 
@@ -131,22 +132,28 @@ public static class LabelFileWriter
 
     private static void AtomicWrite(string path, IReadOnlyList<string> lines)
     {
-        var dir = Path.GetDirectoryName(Path.GetFullPath(path));
+        var fullPath = Path.GetFullPath(path);
+
+        // Prevent directory traversal: output must stay within packages or workspace.
+        var cfg = D365FoSettings.FromEnvironment();
+        PathGuard.EnsureWithinBoundary(fullPath, cfg.PackagesPath, cfg.WorkspacePath);
+
+        var dir = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        var tmp = path + ".tmp";
+        var tmp = fullPath + ".tmp";
         // UTF-8 with BOM matches what Visual Studio writes for .label.txt files.
         using (var writer = new StreamWriter(tmp, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)))
         {
             foreach (var line in lines)
                 writer.WriteLine(line);
         }
-        if (File.Exists(path))
+        if (File.Exists(fullPath))
         {
-            var bak = path + ".bak";
+            var bak = fullPath + ".bak";
             if (File.Exists(bak)) File.Delete(bak);
-            File.Move(path, bak);
+            File.Move(fullPath, bak);
         }
-        File.Move(tmp, path);
+        File.Move(tmp, fullPath);
     }
 }
 
