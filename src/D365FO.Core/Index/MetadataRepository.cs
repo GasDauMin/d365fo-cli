@@ -1342,6 +1342,16 @@ public sealed class MetadataRepository
         // TableFields and TableMethods are high-volume inserts. Use prepared
         // SqliteCommands with parameter rebinding for ~3-5x throughput vs
         // Dapper's per-row anonymous-object reflection (same technique as Labels).
+        // Tables main insert — prepared statement (30k+ rows for large models).
+        using var tableCmd = conn.CreateCommand();
+        tableCmd.Transaction = (Microsoft.Data.Sqlite.SqliteTransaction)tx;
+        tableCmd.CommandText = "INSERT INTO Tables(Name, ModelId, Label, SourcePath) VALUES($n, $m, $l, $p)";
+        var tblName    = tableCmd.Parameters.Add("$n", Microsoft.Data.Sqlite.SqliteType.Text);
+        var tblModelId = tableCmd.Parameters.Add("$m", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var tblLabel   = tableCmd.Parameters.Add("$l", Microsoft.Data.Sqlite.SqliteType.Text);
+        var tblPath    = tableCmd.Parameters.Add("$p", Microsoft.Data.Sqlite.SqliteType.Text);
+        tableCmd.Prepare();
+
         using var tableFieldCmd = conn.CreateCommand();
         tableFieldCmd.Transaction = (Microsoft.Data.Sqlite.SqliteTransaction)tx;
         tableFieldCmd.CommandText = "INSERT INTO TableFields(TableId, Name, Type, EdtName, Label, Mandatory) VALUES($tid, $n, $ty, $e, $l, $md)";
@@ -1368,9 +1378,11 @@ public sealed class MetadataRepository
 
         foreach (var t in batch.Tables)
         {
-            conn.Execute(@"INSERT INTO Tables(Name, ModelId, Label, SourcePath)
-                           VALUES(@n, @m, @l, @p)",
-                         new { n = t.Name, m = modelId, l = t.Label, p = t.SourcePath }, tx);
+            tblName.Value    = t.Name;
+            tblModelId.Value = modelId;
+            tblLabel.Value   = (object?)t.Label      ?? DBNull.Value;
+            tblPath.Value    = (object?)t.SourcePath ?? DBNull.Value;
+            tableCmd.ExecuteNonQuery();
             var tableId = conn.ExecuteScalar<long>("SELECT last_insert_rowid()", transaction: tx);
             tfTid.Value = tableId;
             foreach (var f in t.Fields)
@@ -1416,6 +1428,29 @@ public sealed class MetadataRepository
 
         // Methods are the highest-volume insert (~500k+ across all models). Apply
         // the same prepared-statement optimization as Labels for ~3-5x throughput.
+        // Classes + ClassAttributes + Methods: all highest-volume for large models.
+        // Prepared statements eliminate per-row Dapper reflection overhead (~50k classes
+        // × ~10 methods in ApplicationSuite/Foundation).
+        using var classCmd = conn.CreateCommand();
+        classCmd.Transaction = (Microsoft.Data.Sqlite.SqliteTransaction)tx;
+        classCmd.CommandText = "INSERT INTO Classes(Name, ModelId, ExtendsName, IsAbstract, IsFinal, SourcePath) VALUES($n, $m, $e, $a, $f, $p)";
+        var clsName     = classCmd.Parameters.Add("$n", Microsoft.Data.Sqlite.SqliteType.Text);
+        var clsModel    = classCmd.Parameters.Add("$m", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var clsExtends  = classCmd.Parameters.Add("$e", Microsoft.Data.Sqlite.SqliteType.Text);
+        var clsAbstract = classCmd.Parameters.Add("$a", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var clsFinal    = classCmd.Parameters.Add("$f", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var clsPath     = classCmd.Parameters.Add("$p", Microsoft.Data.Sqlite.SqliteType.Text);
+        classCmd.Prepare();
+
+        using var attrCmd = conn.CreateCommand();
+        attrCmd.Transaction = (Microsoft.Data.Sqlite.SqliteTransaction)tx;
+        attrCmd.CommandText = "INSERT INTO ClassAttributes(ClassId, MethodName, AttributeName, RawArgs) VALUES($c, $m, $n, $a)";
+        var attrCid  = attrCmd.Parameters.Add("$c", Microsoft.Data.Sqlite.SqliteType.Integer);
+        var attrMeth = attrCmd.Parameters.Add("$m", Microsoft.Data.Sqlite.SqliteType.Text);
+        var attrName = attrCmd.Parameters.Add("$n", Microsoft.Data.Sqlite.SqliteType.Text);
+        var attrArgs = attrCmd.Parameters.Add("$a", Microsoft.Data.Sqlite.SqliteType.Text);
+        attrCmd.Prepare();
+
         using var methodCmd = conn.CreateCommand();
         methodCmd.Transaction = (Microsoft.Data.Sqlite.SqliteTransaction)tx;
         methodCmd.CommandText = "INSERT INTO Methods(ClassId, Name, Signature, IsStatic, ReturnType, HasDocComment, HasTodayCall, HasDoInsertOrUpdate) VALUES($cid, $n, $s, $st, $rt, $hd, $ht, $hi)";
@@ -1431,9 +1466,13 @@ public sealed class MetadataRepository
 
         foreach (var c in batch.Classes)
         {
-            conn.Execute(@"INSERT INTO Classes(Name, ModelId, ExtendsName, IsAbstract, IsFinal, SourcePath)
-                           VALUES(@n, @m, @e, @a, @f, @p)",
-                         new { n = c.Name, m = modelId, e = c.Extends, a = c.IsAbstract ? 1 : 0, f = c.IsFinal ? 1 : 0, p = c.SourcePath }, tx);
+            clsName.Value     = c.Name;
+            clsModel.Value    = modelId;
+            clsExtends.Value  = (object?)c.Extends    ?? DBNull.Value;
+            clsAbstract.Value = c.IsAbstract ? 1 : 0;
+            clsFinal.Value    = c.IsFinal    ? 1 : 0;
+            clsPath.Value     = (object?)c.SourcePath ?? DBNull.Value;
+            classCmd.ExecuteNonQuery();
             var classId = conn.ExecuteScalar<long>("SELECT last_insert_rowid()", transaction: tx);
             mtdCid.Value = classId;
             foreach (var mtd in c.Methods)
@@ -1447,11 +1486,13 @@ public sealed class MetadataRepository
                 mtdHasDoInsert.Value = mtd.HasDoInsertOrUpdate ? 1 : 0;
                 methodCmd.ExecuteNonQuery();
             }
+            attrCid.Value = classId;
             foreach (var a in c.Attributes)
             {
-                conn.Execute(@"INSERT INTO ClassAttributes(ClassId, MethodName, AttributeName, RawArgs)
-                               VALUES(@c, @m, @n, @a)",
-                             new { c = classId, m = a.MethodName, n = a.AttributeName, a = a.RawArgs }, tx);
+                attrMeth.Value = (object?)a.MethodName    ?? DBNull.Value;
+                attrName.Value = a.AttributeName;
+                attrArgs.Value = (object?)a.RawArgs       ?? DBNull.Value;
+                attrCmd.ExecuteNonQuery();
             }
         }
 
@@ -1661,6 +1702,11 @@ public sealed class MetadataRepository
 
         tx.Commit();
 
+        // Flush and truncate WAL after each model commit. wal_autocheckpoint=0
+        // prevents mid-transaction checkpoint stalls on large models; we do it
+        // manually here so the WAL never grows unboundedly across models.
+        conn.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
+
         // Rebuild the flattened SecurityMap (Role x Duty x Privilege x
         // EntryPoint) for this model's roles/duties. We do this in a short
         // second transaction *after* commit so the join sees both this model's
@@ -1792,7 +1838,7 @@ public sealed class MetadataRepository
         // Per-connection pragmas: foreign_keys is a per-connection setting,
         // journal_mode WAL survives across connections but is cheap to re-assert.
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -65536;";
+        cmd.CommandText = "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY; PRAGMA cache_size = -65536; PRAGMA wal_autocheckpoint = 0;";
         cmd.ExecuteNonQuery();
         return conn;
     }
