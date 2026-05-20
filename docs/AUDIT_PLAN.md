@@ -565,27 +565,27 @@ Updated:
 
 ---
 
-## Phase 9: MCP Parity 🔲
+## Phase 9: MCP Parity ✅
 
 Every new Core feature should get a corresponding MCP tool. Track parity below.
 
 | New Feature | CLI Command | MCP Tool | Status |
 |-------------|-------------|----------|--------|
-| EDT scaffold | `generate edt` | `generate_edt` | 🔲 |
-| Enum scaffold | `generate enum` | `generate_enum` | 🔲 |
-| Query scaffold | `generate query` | `generate_query` | 🔲 |
-| SysOperation scaffold | `generate sysoperation` | `generate_sysoperation` | 🔲 |
-| Workflow scaffold | `generate workflow` | `generate_workflow` | 🔲 |
-| NumberSeq scaffold | `generate number-sequence` | `generate_number_sequence` | 🔲 |
-| MenuItem scaffold | `generate menu-item` | `generate_menu_item` | 🔲 |
-| Business event search | `search business-event` | `search_business_events` | 🔲 |
-| Business event get | `get business-event` | `get_business_event` | 🔲 |
-| Security policy search | `search security-policy` | `search_security_policies` | 🔲 |
-| Integration analysis | `analyze integration` | `analyze_integration` | 🔲 |
-| Integration report | `report integrations` | `report_integrations` | 🔲 |
-| Impact analysis | `impact` | `analyze_impact` | 🔲 |
-| Batch job finder | `find batch-jobs` | `find_batch_jobs` | 🔲 |
-| New lint rules | `lint` (extended) | `lint` (updated) | 🔲 |
+| EDT scaffold | `generate edt` | `generate_edt` | ✅ |
+| Enum scaffold | `generate enum` | `generate_enum` | ✅ |
+| Query scaffold | `generate query` | `generate_query` | ✅ |
+| SysOperation scaffold | `generate sysoperation` | `generate_sysoperation` | ✅ |
+| Workflow scaffold | `generate workflow` | `generate_workflow` | 🔲 (deferred) |
+| NumberSeq scaffold | `generate number-sequence` | `generate_number_sequence` | 🔲 (deferred) |
+| MenuItem scaffold | `generate menu-item` | `generate_menu_item` | 🔲 (deferred) |
+| Business event search | `search business-event` | `search_business_events` | ✅ |
+| Business event get | `get business-event` | `get_business_event` | ✅ |
+| Security policy search | `search security-policy` | `search_security_policies` | ✅ |
+| Integration analysis | `analyze integration` | `analyze_integration` | ✅ |
+| Integration report | `report integrations` | `report_integrations` | ✅ |
+| Impact analysis | `analyze impact` | `analyze_impact` | ✅ |
+| Batch job finder | `find batch-jobs` | `find_batch_jobs` | ✅ |
+| New lint rules | `lint` (extended) | `lint` (updated) | ✅ |
 
 **Files:**
 - `src/D365FO.Mcp/ToolCatalog.cs` — add entries for each new tool
