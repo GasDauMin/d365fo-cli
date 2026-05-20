@@ -291,6 +291,22 @@ public sealed record WorkspaceInfo(
     string Model,
     string? SourcePath);
 
+// ---- Phase 7: developer experience DTOs ---------------------------------
+
+/// <summary>Aggregated per-command timing row from <c>d365fo stats --perf</c>.</summary>
+public sealed record CommandTimingRow(string Command, long Calls, double AvgMs, long MaxMs, long MinMs);
+
+/// <summary>Change-impact report from <c>d365fo analyze impact</c>.</summary>
+public sealed record ImpactReport(
+    string ObjectName,
+    IReadOnlyList<object> Direct,
+    IReadOnlyList<CocExtensionInfo>    CocWrappers,
+    IReadOnlyList<EventSubscriberInfo> EventHandlers,
+    IReadOnlyList<ObjectExtensionInfo> Extensions,
+    IReadOnlyList<object>              FormDataSources,
+    IReadOnlyList<object>              DataEntities,
+    IReadOnlyList<object>              Queries);
+
 // ---- Phase 5: integration analysis DTOs ---------------------------------
 
 /// <summary>A single integration-readiness finding from <c>d365fo analyze integration</c>.</summary>

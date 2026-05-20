@@ -448,9 +448,9 @@ Scaffold an `AxSecurityPolicy` (XDS policy) with a policy query and constrained 
 
 ---
 
-## Phase 7: Developer Experience & Tooling 🔲
+## Phase 7: Developer Experience & Tooling ✅
 
-### 7.1 `d365fo impact <object>` 🔲
+### 7.1 `d365fo analyze impact <object>` ✅
 
 Change-impact analysis: given an AOT object name, produce a ranked list of all
 downstream consumers that would be affected by a modification:
@@ -467,7 +467,7 @@ Returns a single structured JSON report with severity tiers (Direct / Indirect).
 
 **File:** `src/D365FO.Cli/Commands/Analyze/AnalyzeImpactCommand.cs` (new)
 
-### 7.2 `d365fo compare <name> --base <gitref>` 🔲
+### 7.2 `d365fo compare <name> --base <gitref>` 🔲 (deferred — complex git integration)
 
 Structured comparison of an AOT object between two git revisions. Unlike `git diff`,
 this reports semantically: "added field X", "changed method signature Y", "removed
@@ -476,7 +476,7 @@ index Z". Builds on `ReviewDiffCommand` logic.
 **File:** `src/D365FO.Cli/Commands/Review/ReviewDiffCommand.cs` — extend with
 `--base <gitref>` + `--name <object>` targeted mode
 
-### 7.3 Shell completion scripts 🔲
+### 7.3 Shell completion scripts ✅
 
 Generate tab-completion scripts for PowerShell, bash, and zsh via
 `d365fo completion <shell>`. Spectre.Console.Cli has built-in completion support.
@@ -484,7 +484,7 @@ Generate tab-completion scripts for PowerShell, bash, and zsh via
 **File:** `src/D365FO.Cli/Program.cs` — enable `cfg.Settings.ExceptionHandler` +
 `cfg.Settings.Registrar` completion wiring
 
-### 7.4 Performance counters (telemetry-free) 🔲
+### 7.4 Performance counters (telemetry-free) ✅
 
 Track per-command execution time in a `CommandTimings` SQLite table.
 Surface via `d365fo stats --perf` for self-diagnosis without external telemetry.
@@ -493,7 +493,7 @@ Surface via `d365fo stats --perf` for self-diagnosis without external telemetry.
 - `src/D365FO.Core/Index/MetadataRepository.cs` — `RecordCommandTiming()`, `GetCommandTimings()`
 - `src/D365FO.Cli/Commands/Stats/StatsCommand.cs` — `--perf` flag
 
-### 7.5 `d365fo search any --kind <K>` multi-kind filter 🔲
+### 7.5 `d365fo search any --kind <K>` multi-kind filter ✅
 
 `search any` currently searches all kinds. Add `--kind table,class,edt` filter
 (comma-separated) to narrow the union query without needing separate search commands.
@@ -501,7 +501,7 @@ Surface via `d365fo stats --perf` for self-diagnosis without external telemetry.
 **File:** `src/D365FO.Core/Index/MetadataRepository.cs` — `SearchAny(query, kinds[])`
 `src/D365FO.Cli/Commands/Search/SearchCommands.cs` — `SearchAnyCommand` settings
 
-### 7.6 `d365fo find batch-jobs` 🔲
+### 7.6 `d365fo find batch-jobs` ✅
 
 Find all batch job classes: `RunBaseBatch` subclasses and `SysOperationServiceController`
 subclasses. Useful for auditing before server upgrades. Requires Phase 4.5 flags.

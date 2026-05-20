@@ -1,4 +1,5 @@
-﻿using D365FO.Cli.Commands.Agent;
+﻿using D365FO.Cli.Commands;
+using D365FO.Cli.Commands.Agent;
 using D365FO.Cli.Commands.Analyze;
 using D365FO.Cli.Commands.Daemon;
 using D365FO.Cli.Commands.Find;
@@ -84,6 +85,7 @@ app.Configure(cfg =>
         b.AddCommand<FindRefsCommand>("refs").WithDescription("Regex scan of indexed X++ source for reverse references to a symbol.");
         b.AddCommand<FindFormPatternsCommand>("form-patterns").WithDescription("Analyse indexed forms by Microsoft pattern / primary table / similarity to a reference form.");
         b.AddCommand<FindRelatedCommand>("related").WithDescription("Generic relation lookup by relation/name for agent workflows.");
+        b.AddCommand<FindBatchJobsCommand>("batch-jobs").WithDescription("Find all RunBaseBatch / SysOperationServiceController subclasses.");
     });
 
     cfg.AddBranch("resolve", b =>
@@ -176,6 +178,7 @@ app.Configure(cfg =>
         b.SetDescription("Cross-check workspace AOT XML against the index.");
         b.AddCommand<AnalyzeCompletenessCommand>("completeness").WithDescription("Report broken EDT, label, security-role references in a project folder.");
         b.AddCommand<AnalyzeIntegrationCommand>("integration").WithDescription("Cross-check data entities for OData / DMF integration readiness.");
+        b.AddCommand<AnalyzeImpactCommand>("impact").WithDescription("Change-impact analysis: list all downstream consumers of an AOT object.");
     });
 
     cfg.AddCommand<ReportIntegrationsCommand>("report-integrations").WithDescription("Aggregated report of OData entities, services, business events, workflow types, and batch jobs.");
@@ -216,6 +219,7 @@ app.Configure(cfg =>
     cfg.AddCommand<VersionCommand>("version").WithDescription("Print version information.");
     cfg.AddCommand<AgentPromptCommand>("agent-prompt").WithDescription("Emit LLM system prompt for this CLI.");
     cfg.AddCommand<SchemaCommand>("schema").WithDescription("Emit JSON command manifest.");
+    cfg.AddCommand<CompletionCommand>("completion").WithDescription("Emit shell tab-completion script (bash, zsh, powershell).");
 });
 
 try

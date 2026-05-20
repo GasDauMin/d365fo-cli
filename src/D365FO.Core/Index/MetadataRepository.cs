@@ -14,7 +14,7 @@ namespace D365FO.Core.Index;
 public sealed class MetadataRepository
 {
     /// <summary>Current schema version tracked in PRAGMA user_version.</summary>
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
 
     private static readonly Lazy<string> SchemaSql = new(LoadEmbeddedSchema);
 
@@ -1266,6 +1266,119 @@ public sealed class MetadataRepository
             WHERE ws.Name LIKE @like
             ORDER BY ws.Name LIMIT @limit",
             new { like, limit }).ToList();
+    }
+
+    // ---- Phase 7: developer experience ----
+
+    /// <summary>
+    /// Find all batch job classes: RunBaseBatch subclasses and
+    /// SysOperationServiceController subclasses. Requires Phase 4 v12 flags.
+    /// </summary>
+    public IReadOnlyList<ClassInfo> FindBatchJobs(string? model = null)
+    {
+        using var conn = OpenReadOnly();
+        return conn.Query<ClassInfo>(@"
+            SELECT c.ClassId, c.Name, m.Name AS Model, c.ExtendsName AS Extends,
+                   c.IsAbstract, c.IsFinal, c.SourcePath
+            FROM Classes c JOIN Models m ON m.ModelId = c.ModelId
+            WHERE (c.IsRunBaseBatch = 1
+               OR c.ExtendsName LIKE '%SysOperationServiceController%'
+               OR c.ExtendsName LIKE '%RunBase%')
+              AND (@model IS NULL OR m.Name = @model)
+            ORDER BY c.Name",
+            new { model }).ToList();
+    }
+
+    /// <summary>
+    /// Variant of <see cref="FindUsages"/> that filters to specific object kinds.
+    /// <paramref name="kinds"/> should be values like "Table", "Class", "EDT".
+    /// When empty, falls back to all kinds.
+    /// </summary>
+    public IReadOnlyList<(string Kind, string Name, string Model)> FindUsagesFiltered(
+        string needle, IReadOnlyList<string>? kinds, int limit = 100)
+    {
+        var all = FindUsages(needle, limit);
+        if (kinds is null || kinds.Count == 0) return all;
+
+        var kindSet = kinds.Select(k => k.Trim().ToLowerInvariant()).ToHashSet();
+        return all.Where(r => kindSet.Contains(r.Kind.ToLowerInvariant())).ToList();
+    }
+
+    /// <summary>
+    /// Produce a change-impact report for an AOT object: CoC wrappers, event handlers,
+    /// extensions, form datasources, data entities, queries, and reports that reference it.
+    /// </summary>
+    public ImpactReport AnalyzeImpact(string objectName)
+    {
+        using var conn = OpenReadOnly();
+
+        var coc = FindCocExtensions(objectName);
+        var handlers = FindEventSubscribers(objectName);
+        var extensions = FindExtensions(objectName);
+
+        // Forms that use the object as a datasource (by table name).
+        var formDs = conn.Query<FormDataSourceRow>(@"
+            SELECT f.Name AS FormName, m.Name AS Model
+            FROM FormDataSources fds
+            JOIN Forms f ON f.FormId = fds.FormId
+            JOIN Models m ON m.ModelId = f.ModelId
+            WHERE fds.TableName = @n",
+            new { n = objectName }).ToList();
+
+        // Data entities backed by this table via QueryName or staging.
+        var entities = conn.Query<DataEntityInfo>(@"
+            SELECT de.EntityId, de.Name, m.Name AS Model, de.PublicEntityName,
+                   de.PublicCollectionName, de.StagingTable, de.QueryName, de.Label, de.SourcePath
+            FROM DataEntities de JOIN Models m ON m.ModelId = de.ModelId
+            WHERE de.StagingTable = @n OR de.QueryName = @n",
+            new { n = objectName }).ToList();
+
+        // Queries that join the object as a datasource table.
+        var queries = conn.Query<QueryDataSourceRow>(@"
+            SELECT q.Name AS QueryName, m.Name AS Model
+            FROM QueryDataSources qds
+            JOIN Queries q ON q.QueryId = qds.QueryId
+            JOIN Models m ON m.ModelId = q.ModelId
+            WHERE qds.TableName = @n",
+            new { n = objectName }).ToList();
+
+        return new ImpactReport(
+            objectName,
+            Direct:   coc.Cast<object>().Concat(extensions).Concat(handlers).ToList(),
+            CocWrappers: coc.ToList(),
+            EventHandlers: handlers.ToList(),
+            Extensions: extensions.ToList(),
+            FormDataSources: formDs.Select(r => new { r.FormName, r.Model }).Cast<object>().ToList(),
+            DataEntities: entities.Cast<object>().ToList(),
+            Queries: queries.Select(r => new { r.QueryName, r.Model }).Cast<object>().ToList());
+    }
+
+    private sealed class FormDataSourceRow { public string FormName { get; set; } = ""; public string Model { get; set; } = ""; }
+    private sealed class QueryDataSourceRow { public string QueryName { get; set; } = ""; public string Model { get; set; } = ""; }
+
+    // ---- Phase 7.4: command performance counters ----
+
+    public void RecordCommandTiming(string command, long elapsedMs)
+    {
+        using var conn = Open();
+        conn.Execute(@"INSERT INTO CommandTimings(Command, ElapsedMs, ExecutedUtc)
+                       VALUES(@c, @ms, @ts)",
+            new { c = command, ms = elapsedMs, ts = DateTime.UtcNow.ToString("O") });
+    }
+
+    public IReadOnlyList<CommandTimingRow> GetCommandTimings(int limit = 50)
+    {
+        using var conn = OpenReadOnly();
+        return conn.Query<CommandTimingRow>(@"
+            SELECT Command,
+                   COUNT(*) AS Calls,
+                   AVG(ElapsedMs) AS AvgMs,
+                   MAX(ElapsedMs) AS MaxMs,
+                   MIN(ElapsedMs) AS MinMs
+            FROM CommandTimings
+            GROUP BY Command
+            ORDER BY AvgMs DESC
+            LIMIT @limit", new { limit }).ToList();
     }
 
     // ---- Phase 5: integration analysis ----

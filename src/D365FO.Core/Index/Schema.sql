@@ -630,3 +630,12 @@ CREATE TABLE IF NOT EXISTS Workspaces (
 );
 CREATE INDEX IF NOT EXISTS IX_Workspaces_Name ON Workspaces(Name);
 
+-- v13: Command performance counters (telemetry-free, local only).
+CREATE TABLE IF NOT EXISTS CommandTimings (
+    Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    Command     TEXT NOT NULL,
+    ElapsedMs   INTEGER NOT NULL,
+    ExecutedUtc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS IX_CommandTimings_Command ON CommandTimings(Command);
+
