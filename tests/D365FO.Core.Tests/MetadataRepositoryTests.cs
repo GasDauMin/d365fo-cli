@@ -35,6 +35,20 @@ public class MetadataRepositoryTests : IDisposable
     }
 
     [Fact]
+    public void Optimize_runs_sqlite_maintenance_commands_as_text()
+    {
+        var repo = new MetadataRepository(_dbPath);
+        repo.EnsureSchema();
+
+        var result = repo.Optimize();
+
+        Assert.True(File.Exists(_dbPath));
+        Assert.True(result.ElapsedMs >= 0);
+        Assert.True(result.SizeBeforeBytes >= 0);
+        Assert.True(result.SizeAfterBytes >= 0);
+    }
+
+    [Fact]
     public void SearchClasses_returns_match_with_bool_coercion()
     {
         var repo = new MetadataRepository(_dbPath);

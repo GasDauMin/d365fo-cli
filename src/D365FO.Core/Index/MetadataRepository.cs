@@ -2591,9 +2591,9 @@ public sealed class MetadataRepository
         var sw = System.Diagnostics.Stopwatch.StartNew();
         long sizeBefore = File.Exists(_databasePath) ? new FileInfo(_databasePath).Length : 0;
         using var conn = Open();
-        conn.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
-        conn.Execute("VACUUM");
-        conn.Execute("ANALYZE");
+        ExecuteSqlText(conn, "PRAGMA wal_checkpoint(TRUNCATE)");
+        ExecuteSqlText(conn, "VACUUM");
+        ExecuteSqlText(conn, "ANALYZE");
         sw.Stop();
         long sizeAfter = File.Exists(_databasePath) ? new FileInfo(_databasePath).Length : 0;
         return new OptimizeResult(sizeBefore, sizeAfter, sw.ElapsedMilliseconds);
@@ -2609,8 +2609,16 @@ public sealed class MetadataRepository
     public void VacuumInto(string destinationPath)
     {
         using var conn = Open();
-        conn.Execute("PRAGMA wal_checkpoint(TRUNCATE)");
-        conn.Execute($"VACUUM INTO '{destinationPath.Replace("'", "''")}'");
+        ExecuteSqlText(conn, "PRAGMA wal_checkpoint(TRUNCATE)");
+        ExecuteSqlText(conn, $"VACUUM INTO '{destinationPath.Replace("'", "''")}'");
+    }
+
+    private static void ExecuteSqlText(SqliteConnection conn, string sql)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandType = CommandType.Text;
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
     }
 
     /// <summary>
